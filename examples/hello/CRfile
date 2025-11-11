@@ -1,0 +1,3 @@
+FROM alpine
+RUN apk update && apk add bash curl
+CMD /bin/sh -c "echo '=== Container Info ==='; echo 'Hostname:' \$(hostname); echo 'Network:'; ip addr show eth0 | grep inet; echo 'Processes:'; ps aux"
