@@ -224,6 +224,14 @@ func Execute() {
 			os.Exit(1)
 		}
 
+	case "recover":
+		fmt.Println("Recovering container states...")
+		if err := container.RecoverHealthChecks(); err != nil {
+			fmt.Printf("Failed to recover containers: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Recovery complete")
+
 	case "child":
 		container.ChildMain()
 
@@ -238,6 +246,7 @@ func Execute() {
 		fmt.Println("  stop      Stop a running container")
 		fmt.Println("  rm        Remove a container")
 		fmt.Println("  exec      Execute a command in a running container")
+		fmt.Println("  recover   Recover stale container states after reboot")
 		os.Exit(1)
 	}
 }

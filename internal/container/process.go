@@ -12,6 +12,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	defaultHostname    = "container"
+	defaultGateway     = "172.19.0.1"
+	networkInterface   = "eth0"
+	networkRetries     = 10
+	networkRetryDelay  = 100 * time.Millisecond
+	defaultShell       = "/bin/sh"
+	alternativeShell   = "/bin/bash"
+	devNullMajor       = 1
+	devNullMinor       = 3
+	devZeroMajor       = 1
+	devZeroMinor       = 5
+)
+
 func ChildMain() {
 	fmt.Println("Running in child process")
 
@@ -29,35 +43,35 @@ func ChildMain() {
 		}
 	} else {
 		if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
-			fmt.Println("Error mounting proc:", err)
+			fmt.Printf("Failed to mount proc: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	if err := syscall.Sethostname([]byte("container")); err != nil {
-		fmt.Println("Error setting hostname:", err)
+	if err := syscall.Sethostname([]byte(defaultHostname)); err != nil {
+		fmt.Printf("Failed to set hostname: %v\n", err)
 		os.Exit(1)
 	}
 
 	if err := waitForNetwork(); err != nil {
-		fmt.Println("Warning: Network setup incomplete:", err)
+		fmt.Printf("Warning: Network setup incomplete: %v\n", err)
 	} else {
 		if err := setupDefaultRoute(); err != nil {
-			fmt.Println("Warning: Failed to setup default route:", err)
+			fmt.Printf("Warning: Failed to setup default route: %v\n", err)
 		}
 	}
 
 	fmt.Printf("Executing command: %s\n", cmd)
 
-	shellPath := "/bin/sh"
+	shellPath := defaultShell
 	if rootfsPath != "" {
 		if _, err := os.Stat(shellPath); os.IsNotExist(err) {
-			shellPath = "/bin/bash"
+			shellPath = alternativeShell
 		}
 	}
 
 	if err := syscall.Exec(shellPath, []string{shellPath, "-c", cmd}, os.Environ()); err != nil {
-		fmt.Println("Exec error:", err)
+		fmt.Printf("Exec error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -67,7 +81,15 @@ func setupRootfs(rootfsPath string) error {
 		return fmt.Errorf("rootfs path does not exist: %s", rootfsPath)
 	}
 
-	requiredDirs := []string{"proc", "sys", "dev", "tmp"}
+	if err := syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("failed to make / private: %w", err)
+	}
+
+	if err := syscall.Mount(rootfsPath, rootfsPath, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("failed to bind mount rootfs: %w", err)
+	}
+
+	requiredDirs := []string{"proc", "sys", "dev", "tmp", ".pivot_root"}
 	for _, dir := range requiredDirs {
 		dirPath := filepath.Join(rootfsPath, dir)
 		if err := os.MkdirAll(dirPath, 0755); err != nil {
@@ -102,15 +124,27 @@ func setupRootfs(rootfsPath string) error {
 		fmt.Printf("Warning: failed to create /dev/zero: %v\n", err)
 	}
 
-	if err := syscall.Chroot(rootfsPath); err != nil {
-		return fmt.Errorf("chroot failed: %w", err)
+	if err := os.Chdir(rootfsPath); err != nil {
+		return fmt.Errorf("chdir to rootfs failed: %w", err)
+	}
+
+	if err := syscall.PivotRoot(".", ".pivot_root"); err != nil {
+		return fmt.Errorf("pivot_root failed: %w", err)
 	}
 
 	if err := os.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir to / failed: %w", err)
 	}
 
-	fmt.Println("Rootfs setup complete")
+	if err := syscall.Unmount("/.pivot_root", syscall.MNT_DETACH); err != nil {
+		return fmt.Errorf("failed to unmount old root: %w", err)
+	}
+
+	if err := os.RemoveAll("/.pivot_root"); err != nil {
+		fmt.Printf("Warning: failed to remove .pivot_root: %v\n", err)
+	}
+
+	fmt.Println("Rootfs setup with pivot_root complete")
 	return nil
 }
 
@@ -168,9 +202,6 @@ func ExecHelper() {
 	rootfsPath := os.Args[3]
 	cmd := os.Args[4]
 
-	// Enter namespaces in the correct order
-	// Note: We skip PID namespace because we can't actually enter it after process creation
-	// We enter: ipc, uts, net, mnt
 	nsTypes := []struct {
 		name string
 		flag int
@@ -197,7 +228,6 @@ func ExecHelper() {
 		fd.Close()
 	}
 
-	// Change root if rootfs is provided
 	if rootfsPath != "" {
 		if err := syscall.Chroot(rootfsPath); err != nil {
 			fmt.Printf("Failed to chroot to %s: %v\n", rootfsPath, err)
@@ -209,7 +239,6 @@ func ExecHelper() {
 		}
 	}
 
-	// Execute the command
 	shellPath := "/bin/sh"
 	if _, err := os.Stat(shellPath); os.IsNotExist(err) {
 		shellPath = "/bin/bash"
