@@ -95,6 +95,8 @@ func Run(command string, detach bool, rootfsPath string) (string, error) {
 		fmt.Printf("Warning: failed to save container metadata: %v\n", err)
 	}
 
+	StartHealthCheck(containerID, cmd.Process.Pid)
+
 	go monitorContainerProcess(containerID, cmd.Process.Pid, vethName)
 
 	if detach {
@@ -161,12 +163,14 @@ func cleanupVeth(vethName string) {
 func monitorContainerProcess(containerID string, pid int, vethName string) {
 	process, err := os.FindProcess(pid)
 	if err != nil {
+		StopHealthCheck(containerID)
 		UpdateContainerState(containerID, StateStopped, 1)
 		return
 	}
 
 	state, err := process.Wait()
 	if err != nil {
+		StopHealthCheck(containerID)
 		UpdateContainerState(containerID, StateStopped, 1)
 		return
 	}
@@ -176,6 +180,7 @@ func monitorContainerProcess(containerID string, pid int, vethName string) {
 		exitCode = 1
 	}
 
+	StopHealthCheck(containerID)
 	UpdateContainerState(containerID, StateStopped, exitCode)
 }
 
@@ -276,6 +281,7 @@ func Stop(containerIDOrName string) error {
 		}
 	}
 
+	StopHealthCheck(targetContainer.ID)
 	cleanupVeth(targetContainer.VethName)
 	UpdateContainerState(targetContainer.ID, StateStopped, 0)
 
@@ -309,27 +315,13 @@ func Exec(containerIDOrName string, command string) error {
 		return fmt.Errorf("container %s has no valid PID", targetContainer.Name)
 	}
 
-	// Use nsenter to enter container namespaces
-	// nsenter -t <pid> -m -u -i -n -p chroot <rootfs> /bin/sh -c <command>
 	pidStr := fmt.Sprintf("%d", targetContainer.PID)
 
-	var cmd *exec.Cmd
-	if targetContainer.RootfsPath != "" {
-		// Enter namespaces and chroot
-		cmd = exec.Command("nsenter",
-			"-t", pidStr,
-			"-m", "-u", "-i", "-n",
-			"--",
-			"chroot", targetContainer.RootfsPath,
-			"/bin/sh", "-c", command)
-	} else {
-		// Enter namespaces only
-		cmd = exec.Command("nsenter",
-			"-t", pidStr,
-			"-m", "-u", "-i", "-n",
-			"--",
-			"/bin/sh", "-c", command)
-	}
+	cmd := exec.Command("nsenter",
+		"-t", pidStr,
+		"-m", "-u", "-i", "-n",
+		"--",
+		"/bin/sh", "-c", command)
 
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
