@@ -317,22 +317,11 @@ func Exec(containerIDOrName string, command string) error {
 
 	pidStr := fmt.Sprintf("%d", targetContainer.PID)
 
-	var cmd *exec.Cmd
-	if targetContainer.RootfsPath != "" {
-		cmd = exec.Command("nsenter",
-			"-t", pidStr,
-			"-m", "-u", "-i", "-n",
-			"--",
-			"chroot", targetContainer.RootfsPath,
-			"/bin/sh", "-c", command)
-	} else {
-		// Enter namespaces only
-		cmd = exec.Command("nsenter",
-			"-t", pidStr,
-			"-m", "-u", "-i", "-n",
-			"--",
-			"/bin/sh", "-c", command)
-	}
+	cmd := exec.Command("nsenter",
+		"-t", pidStr,
+		"-m", "-u", "-i", "-n",
+		"--",
+		"/bin/sh", "-c", command)
 
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
